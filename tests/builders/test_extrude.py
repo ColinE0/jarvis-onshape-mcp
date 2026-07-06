@@ -138,11 +138,13 @@ class TestExtrudeBuilder:
         assert len(entities_param["queries"]) > 0
 
         query = entities_param["queries"][0]
-        # The actual implementation uses "queryString" field with qSketchRegion
-        assert query["btType"] == "BTMIndividualSketchRegionQuery-140"
-        assert "queryString" in query
-        assert sketch_id in query["queryString"]
-        assert "qSketchRegion" in query["queryString"]
+        # Minimal accepted form: btType + featureId. Extra fields (null
+        # queryStatement, queryString FS text, empty deterministicIds) cause
+        # 400s on current API revisions.
+        assert query == {
+            "btType": "BTMIndividualSketchRegionQuery-140",
+            "featureId": sketch_id,
+        }
 
     def test_build_includes_operation_type_parameter(self):
         """Test that build() includes operation type parameter."""
@@ -286,8 +288,15 @@ class TestExtrudeBuilder:
         assert result["feature"]["name"] == "CompleteExtrude"
 
         parameters = result["feature"]["parameters"]
-        # entities, operationType, endBound, depth, oppositeDirection
-        assert len(parameters) == 5
+        param_ids = {p["parameterId"] for p in parameters}
+        assert param_ids == {
+            "entities",
+            "operationType",
+            "depth",
+            "oppositeDirection",
+            "symmetric",
+            "endBound",
+        }
 
     def test_zero_depth(self):
         """Test handling zero depth."""

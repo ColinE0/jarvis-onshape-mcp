@@ -61,8 +61,6 @@ def _ref_param(parameter_id: str, entity_ref: str) -> Dict[str, Any]:
         "btType": "BTMParameterString-149",
         "value": entity_ref,
         "parameterId": parameter_id,
-        "parameterName": "",
-        "libraryRelationType": "NONE",
     }
 
 
@@ -79,8 +77,6 @@ def _quantity_param(parameter_id: str, expression: str) -> Dict[str, Any]:
         "units": "",
         "expression": expression,
         "parameterId": parameter_id,
-        "parameterName": "",
-        "libraryRelationType": "NONE",
     }
 
 
@@ -91,8 +87,6 @@ def _enum_param(parameter_id: str, enum_name: str, value: str) -> Dict[str, Any]
         "enumName": enum_name,
         "value": value,
         "parameterId": parameter_id,
-        "parameterName": "",
-        "libraryRelationType": "NONE",
     }
 
 

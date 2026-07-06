@@ -55,6 +55,8 @@ After every feature that creates or modifies visible geometry:
 
 Text checks catch arithmetic and counting errors (my weak spot). Image checks catch orientation and topology errors. Neither alone is sufficient.
 
+**Building from a reference image?** Use `compare_to_reference(documentId, workspaceId, elementId, referenceImagePath)` for the visual check instead of separate renders — it composites the reference above your build's iso/top/front/right views at matched horizontal scale, so feature count, placement, and proportion mismatches jump out without squinting across images. Run it at least once mid-build and once before declaring done.
+
 ## Sketches: coordinate-first vs constraint-first
 
 `create_sketch` has two surfaces. The right one depends on what you're
@@ -222,6 +224,27 @@ Face/edge IDs are strings like `JHK`, `JNC`, `JHl`. Drop them verbatim into tool
 
 Mate handlers (`create_fastened_mate` / `create_revolute_mate` / `create_slider_mate` / `create_cylindrical_mate` / `create_mate_connector`) share the same `{ok, status, ...}` contract via `apply_assembly_feature_and_check`. A mate that silently flips an instance still shows up as `status="ERROR"` or `"WARNING"` on the mate-level response — no need to visually check every mate just to catch a solver rejection. The 4-mate-for-2-part bracket dogfood burned ~50 turns to the now-fixed prose-return of this path.
 
+## Assemblies: the position-check protocol
+
+The part-studio protocols above have an assembly mirror. Workflow:
+
+1. `create_assembly`, then `add_assembly_instance` per part. Record the instance ids the responses return — mates and transforms take instance ids, not part names.
+2. Coarse placement first (`set_instance_position` / `transform_instance` / `align_instance_to_face`), then mates. A mate solver starting from a grossly wrong pose flips instances in surprising ways.
+3. Every mate returns the same `{ok, status, error_message}` contract as features (see regen-check above). ERROR/WARNING on the mate response is your solver-rejection signal — read it, don't render-hunt for it.
+4. After each mate/transform batch, verify NUMERICALLY before visually: `get_assembly_positions` (reports mm) to confirm each instance is where you predicted, and `check_assembly_interference` to catch parts occupying the same space — interference is invisible in most renders.
+5. Only after the numbers check out, `render_assembly_views` for the topology/orientation glance.
+
+If you lose track of instance or mate ids (long session, compaction), `get_assembly` + `get_assembly_features` re-enumerate them; don't guess.
+
+## Checkpoint the build log
+
+CAD sessions are long and WILL hit context compaction; every id that lives only in chat dies there. Keep a build log file (scratchpad or working folder) and append as you go:
+
+- Once at the top: `document_id`, `workspace_id`, each element id (`part_studio`, `assembly`, `variable_studio`) as it's created.
+- One line per successful feature/mate: feature_id, name, and a few words of intent (`Fx7K extrude1 base plate 30mm`).
+
+Cost: one short append after each verified step. Payoff: a resumed or compacted session reads the log, runs one `describe_part_studio` to re-sync, and continues — instead of burning turns on `list_documents`/`search_documents` archaeology or, worse, rebuilding features that already exist.
+
 ## Extrude-on-face direction trap
 
 Cutting a hole from a +Z face (e.g. sketch on the top of a plate, then REMOVE-extrude to make a hole): the default direction is the sketch normal, which points **away from the material** (+Z into air). The cut removes nothing; Onshape returns `INFO: nothing was cut`.
@@ -272,50 +295,22 @@ Tool responses now include a `hints` list that points at this section; don't ign
 2. **A primitive tool can't express it.** Helical cut, loft between profiles, draft on a set of faces, sweep along a 3D path, variable-radius fillet, per-face-thickness shell. These have no MCP tool today and won't grow one; FS is the answer. (Uniform-thickness shells DO have a primitive — `create_shell`. Offset construction planes DO too — `create_offset_plane`. Reach for FS only when you need the non-uniform / multi-face version.)
 3. **You need per-instance parameters beyond what update_feature handles.** If you want `set_variable(hole_d_m3)` to retarget 8 through-holes and 8 counterbores in one shot, package the pair as a custom feature whose definition takes `hole_d` + `cbore_d` parameters. `update_feature` only tweaks one feature's params; a custom feature lets one variable bump drive the whole chain.
 
-**Minimal template** (copy, adapt, pass as `featureScript` to `write_featurescript_feature`):
-
-```
-FeatureScript 2909;
-import(path : "onshape/std/geometry.fs", version : "2909.0");
-
-annotation { "Feature Type Name" : "My Custom Feature" }
-export const myCustomFeature = defineFeature(function(context is Context, id is Id, definition is map)
-    precondition
-    {
-        annotation { "Name" : "Length" }
-        isLength(definition.length, LENGTH_BOUNDS);
-        // Add more parameters here: isAngle, isReal, isInteger, isBoolean, etc.
-    }
-    {
-        // Body of the feature -- call op* primitives from onshape/std.
-        // opPlane(context, id + "plane1", { "plane" : plane(vector(0,0,1)*definition.length, vector(0,0,1)) });
-        // opExtrude(context, id + "ext1", { "entities": ..., "direction": ..., "endBound": ..., "endBoundEntity": ... });
-    });
-```
-
-Call from the MCP layer:
-
-```
-write_featurescript_feature(
-  documentId, workspaceId, elementId,
-  feature_type="myCustomFeature",
-  feature_name="Instance name",
-  feature_script="<the FS source above>",
-  parameters=[{"id": "length", "type": "quantity", "value": "15 mm"}],
-)
-```
-
-The orchestrator creates a Feature Studio element, uploads the source, pulls the microversion, and instantiates via BTMFeature-134 with the correct `e<eid>::m<mv>` namespace. You get back a `FeatureApplyResult` with the usual `{status, feature_id, error_message, hints}` contract — regen errors in your FS body propagate through exactly the same way as starter-feature errors.
+**Minimal template + MCP call sequence:** read `references/featurescript.md` in this skill's directory before your first `write_featurescript_feature` of the session. It has the copy-adapt `defineFeature` skeleton, the `write_featurescript_feature` argument shape, and what the orchestrator does under the hood. Regen errors in your FS body come back through the usual `{status, feature_id, error_message, hints}` contract.
 
 ## ToolSearch efficiency
 
-This MCP server exposes many deferred tools. Every time you call a tool that hasn't been loaded, the runtime spends a round-trip loading the schema. **Batch-load the tool surface in one `ToolSearch` call upfront**:
+This MCP server exposes many deferred tools. Every time you call a tool that hasn't been loaded, the runtime spends a round-trip loading the schema. **Batch-load the tool surface in one `ToolSearch` call upfront.**
+
+The tool-name PREFIX depends on how the server is installed (standalone: `mcp__onshape__*`; via the plugin: `mcp__plugin_jarvis-onshape-mcp_onshape__*`), so a hardcoded `select:` list rots the moment the install changes. Prefer a keyword query, which matches any prefix:
 
 ```
-ToolSearch(query="select:mcp__onshape__create_sketch,mcp__onshape__create_sketch_rectangle,mcp__onshape__create_sketch_circle,mcp__onshape__create_extrude,mcp__onshape__create_fillet,mcp__onshape__create_chamfer,mcp__onshape__create_shell,mcp__onshape__create_offset_plane,mcp__onshape__list_entities,mcp__onshape__describe_part_studio,mcp__onshape__measure,mcp__onshape__get_mass_properties,mcp__onshape__export_part_studio,mcp__onshape__create_document,mcp__onshape__create_part_studio", max_results=15)
+ToolSearch(query="onshape sketch extrude fillet describe entities measure export", max_results=25)   # part-studio session
+ToolSearch(query="onshape assembly instance mate positions interference", max_results=20)            # assembly session
 ```
 
-Saves 3-5 individual search calls per session. The multi-entity `create_sketch` collapses a lot of small cases; prefer it over per-primitive tools.
+If you do use `select:`, copy the exact names from the deferred-tools list in the CURRENT session — never from memory or from this doc.
+
+The multi-entity `create_sketch` collapses a lot of small cases; prefer it over per-primitive tools.
 
 ## Iteration discipline
 

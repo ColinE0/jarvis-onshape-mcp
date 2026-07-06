@@ -77,7 +77,9 @@ class TestBooleanBuilder:
         assert result["btType"] == "BTFeatureDefinitionCall-1406"
         feature = result["feature"]
         assert feature["btType"] == "BTMFeature-134"
-        assert feature["featureType"] == "boolean"
+        # "booleanBodies" is the spec name; bare "boolean" is rejected with
+        # HTTP 400 "Feature has invalid type".
+        assert feature["featureType"] == "booleanBodies"
         assert feature["name"] == "TestBool"
 
     def test_build_boolean_type_parameter(self):
@@ -89,7 +91,7 @@ class TestBooleanBuilder:
             result = b.build()
             params = result["feature"]["parameters"]
             type_param = next(
-                p for p in params if p["parameterId"] == "booleanOperationType"
+                p for p in params if p["parameterId"] == "operationType"
             )
             assert type_param["value"] == bt.value
 

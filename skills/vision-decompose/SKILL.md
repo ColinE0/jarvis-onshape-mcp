@@ -22,11 +22,23 @@ correction, then build with confidence.
 
 - The reference image(s): a drawing with callouts, an iso/multi-view
   render, a photo, or a hand sketch. Whatever the user provided.
-- `mcp__onshape__load_local_image(imagePath)` — cache an image (typically
+- `load_local_image(imagePath)` — cache an image (typically
   the user's reference, on disk) at native resolution.
-- `mcp__onshape__crop_image(imageId, x1, y1, x2, y2)` — zoom into a region
+- `crop_image(imageId, x1, y1, x2, y2)` — zoom into a region
   of any cached image. Crops are independently re-loadable; use them
   liberally to read small text or count features.
+- `extract_drawing_dimensions(imagePath)` — OCR a drawing PNG and get
+  every numeric callout it can read, grouped by kind (length / radius /
+  diameter / thread / angle / count / scale), each with a pixel position
+  so you can map it onto the feature it dimensions. Run this BEFORE
+  reading dims by eye — OCR is more reliable than a vision pass on small
+  text. Known limit: `Ø` often misreads as `9` (`Ø50` → `950`);
+  cross-check high-significance dims with `crop_image` at native
+  resolution.
+
+(Tool names here are suffixes. The full MCP names carry an
+install-dependent prefix such as `mcp__plugin_jarvis-onshape-mcp_onshape__`
+— match by suffix against your session's tool list, don't hardcode.)
 
 ## What you produce
 
@@ -38,7 +50,9 @@ One sentence: what IS this part? (bracket / plate / flange / housing / etc.)
 
 ## ENVELOPE
 Approximate overall dimensions in mm if readable from callouts. State each
-axis: X_length × Y_width × Z_height. If unreadable, say "UNKNOWN" and the
+axis: X_length × Y_width × Z_height. If the drawing's native units are not
+mm (check the title block — US drawings default to inches), state the
+native value AND the mm conversion. If unreadable, say "UNKNOWN" and the
 build phase will need a reasonable default or ask the user.
 
 ## FEATURE TREE
@@ -70,10 +84,24 @@ Anything you weren't sure about. Be explicit — list what you'd want the
 user to confirm before you commit to a build.
 ```
 
+**Save it, don't just say it.** Write the structured response to a
+`decomposition.md` next to the reference image (or in the working folder),
+with the reference image's path recorded at the top. The decomposition is
+a handoff artifact: it must survive context compaction, the user should be
+able to edit it directly, and the build phase executes against the file,
+not against chat scroll-back. When the user corrects something, update the
+file before building.
+
 After producing the structured response, **briefly check with the user**:
 "Does this match what you intended? Any corrections before I start
 building?" The user has more context than the image alone — let them fix
 your read before you spend turns building wrong.
+
+Handoff note for the build phase: `decomposition.md` plus the original
+image path are its inputs. Mid-build and before declaring done, the
+builder should run `compare_to_reference` against that same image path to
+verify feature count, placement, and proportion side by side (see the
+onshape skill's render-first protocol).
 
 ## Think out loud as you work
 
@@ -110,22 +138,43 @@ Mandatory steps, in order:
    - size estimate (read callouts if visible, else fraction of envelope)
    - position and orientation
    - role (additive? subtractive? cosmetic?)
-4. **Handle the drawing specifically if you have one.** For dimension
-   callouts: crop into each one, read the number at native resolution, note
-   which feature it applies to. Callouts like `Ø25` mean diameter 25, `R3`
-   mean radius 3, `4X` prefix means "this callout applies to 4 instances".
+4. **Handle the drawing specifically if you have one.** In order:
+   - Read the title block FIRST for units. "UNLESS OTHERWISE SPECIFIED —
+     DIMENSIONS ARE IN INCHES" is the US default; do not assume mm. Note
+     the drawing's native units in ENVELOPE and convert to mm explicitly.
+   - Run `extract_drawing_dimensions(imagePath)` to OCR every callout in
+     one shot. Use each callout's pixel position to map it to the feature
+     it dimensions.
+   - Then crop to VERIFY, not to discover: any dim that drives the
+     envelope, anything OCR flagged oddly, and every `9`-prefixed value
+     that could be a misread `Ø` (`950` is almost always `Ø50`).
+   - Callout syntax: `Ø25` = diameter 25, `R3` = radius 3, a `4X` prefix
+     means "applies to 4 instances", `M6x1.0` is a metric thread callout.
 5. **Self-check coverage.** Before finalizing, ask: does my feature tree cover
    every distinct silhouette region of the part? Scan the overview image one
    more time. If there's a feature I see but didn't list, add it.
-6. **Output the structured response.** No preamble, no reasoning, just the
-   sections above filled in.
+6. **Cross-check before finalizing.** Two cheap passes that catch the most
+   expensive misreads:
+   - *Multi-view correlation.* On a multi-view drawing, every feature must
+     be consistent across the views that show it — a boss in the top view
+     must appear in the side view's silhouette or as hidden lines. A
+     feature visible in only one view is a suspected misread until
+     confirmed; put it in UNCERTAINTIES.
+   - *Dimensional consistency.* Do sub-dimensions sum to the envelope? Are
+     hole centers inside the outline? Is pattern spacing consistent with
+     the count and the span? When two readings contradict, do NOT silently
+     pick one — list the contradiction in UNCERTAINTIES.
+7. **Output the structured response.** No preamble, no reasoning, just the
+   sections above filled in — and save it to `decomposition.md` as
+   described above.
 
 ## Scope discipline
 
-In this phase, the only tools you should reach for are `load_local_image`
-and `crop_image` (plus reading static files). Don't call build tools yet —
-finish describing first, then transition to the building phase once the
-user confirms the spec.
+In this phase, the only tools you should reach for are `load_local_image`,
+`crop_image`, and `extract_drawing_dimensions` (plus reading and writing
+static files like `decomposition.md`). Don't call build tools yet — finish
+describing first, then transition to the building phase once the user
+confirms the spec.
 
 ## Common failure modes to avoid
 

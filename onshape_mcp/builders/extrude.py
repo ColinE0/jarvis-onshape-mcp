@@ -133,17 +133,16 @@ class ExtrudeBuilder:
                         "btType": "BTMParameterQueryList-148",
                         "queries": [
                             {
+                                # Minimal form Onshape accepts: btType +
+                                # featureId. Extra fields (null queryStatement,
+                                # a queryString FS snippet, empty
+                                # deterministicIds) trigger 400s on current
+                                # API revisions.
                                 "btType": "BTMIndividualSketchRegionQuery-140",
-                                "queryStatement": None,
-                                "filterInnerLoops": True,
-                                "queryString": f'query = qSketchRegion(id + "{self.sketch_feature_id}", true);',
                                 "featureId": self.sketch_feature_id,
-                                "deterministicIds": [],
                             }
                         ],
                         "parameterId": "entities",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterEnum-145",
@@ -151,8 +150,6 @@ class ExtrudeBuilder:
                         "enumName": "NewBodyOperationType",
                         "value": self.operation_type.value,
                         "parameterId": "operationType",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -161,22 +158,25 @@ class ExtrudeBuilder:
                         "units": "",
                         "expression": depth_expression,
                         "parameterId": "depth",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterBoolean-144",
                         "value": self.opposite_direction,
                         "parameterId": "oppositeDirection",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterBoolean-144",
                         "value": self.end_type == ExtrudeEndType.SYMMETRIC,
                         "parameterId": "symmetric",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
+                    },
+                    {
+                        # Without an explicit endBound the regenerator rejects
+                        # the depth parameter on current API revisions.
+                        "btType": "BTMParameterEnum-145",
+                        "namespace": "",
+                        "enumName": "BoundingType",
+                        "value": "BLIND",
+                        "parameterId": "endBound",
                     },
                 ],
             },

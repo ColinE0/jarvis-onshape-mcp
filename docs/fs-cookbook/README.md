@@ -13,6 +13,7 @@ here have all been verified end-to-end against the live Onshape API.
 | Recipe | When to use |
 |---|---|
 | [`helix.fs`](helix.fs) | Threads (internal/external), springs (compression/extension), augers, screw conveyors, helical ribs. Anything where a 2D profile sweeps along a helical path. Avoids the broken `opHelix` API in favor of `opFitSpline + opSweep`. |
+| [`cut-pattern.fs`](cut-pattern.fs) | Repeating a hole/cut (REMOVE feature). The pattern tools replicate bodies a seed feature created, and cuts create none — so pattern the tool geometry and subtract it in one boolean instead. |
 
 ## Adding a new recipe
 

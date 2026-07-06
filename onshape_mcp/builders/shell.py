@@ -100,8 +100,6 @@ class ShellBuilder:
                             }
                         ],
                         "parameterId": "entities",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -110,15 +108,11 @@ class ShellBuilder:
                         "units": "",
                         "expression": thickness_expression,
                         "parameterId": "thickness",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterBoolean-144",
                         "value": self.outward,
                         "parameterId": "oppositeDirection",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                 ],
             },

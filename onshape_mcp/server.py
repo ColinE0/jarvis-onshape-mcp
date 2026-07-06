@@ -5,6 +5,7 @@ import sys
 import asyncio
 import base64
 import json
+import tempfile
 from typing import Any, Optional
 import httpx
 from dotenv import load_dotenv
@@ -15,6 +16,21 @@ from loguru import logger
 
 # Load environment variables from .env file before local imports read them.
 # Look for .env in the package directory (where this server.py lives).
+#
+# First, drop credential vars that are present but EMPTY. Plugin hosts inject
+# ${user_config.*} values even when the user never filled them in, and an
+# injected "" both fails auth and shadows every other source: load_dotenv
+# never overwrites an existing key (even an empty one), and the empty child
+# env replaces the OS-level user variables. Scrubbing empties restores the
+# sane precedence: real env var > .env > nothing.
+for _cred_var in (
+    "ONSHAPE_ACCESS_KEY",
+    "ONSHAPE_SECRET_KEY",
+    "ONSHAPE_API_KEY",
+    "ONSHAPE_API_SECRET",
+):
+    if os.environ.get(_cred_var) == "":
+        del os.environ[_cred_var]
 _package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_package_dir, ".env"))
 
@@ -107,7 +123,7 @@ list_entities, or from create_offset_plane).
 - create_revolve / create_thicken
 - create_fillet / create_chamfer
 - create_shell — hollow a body; pass faceIds to remove; inward by default (bbox preserved)
-- create_offset_plane — signed offset from a datum (Front/Top/Right) or a face; pass feature_id as faceId into any sketch primitive
+- create_offset_plane — signed offset from a datum (Front/Top/Right) or a face; sketch on it by passing the returned face_id (NOT feature_id) as faceId
 - create_boolean — union / subtract / intersect existing bodies
 - create_linear_pattern / create_circular_pattern
 - write_featurescript_feature — escape hatch: threads, helices, sweeps, lofts, anything not primitive. Takes a complete FS source file.
@@ -1492,8 +1508,10 @@ async def list_tools() -> list[Tool]:
                 "without an existing face there. Pass a `plane` (Front/Top/Right) to "
                 "offset from a standard datum, OR a `referenceFaceId` (from "
                 "`list_entities`) to offset from a face. The new plane becomes a "
-                "sketch target — pass its `feature_id` as the `faceId` arg to any "
-                "sketch primitive."
+                "sketch target — pass the `face_id` from this tool's response (NOT "
+                "the feature_id) as the `faceId` arg to any sketch primitive; the "
+                "feature_id is not a face and sketches reject it with "
+                "SKETCH_NO_PLANE."
             ),
             inputSchema={
                 "type": "object",
@@ -1556,11 +1574,15 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="create_linear_pattern",
             description=(
-                "Create a linear pattern of features. Requires a deterministic edge id "
-                "whose direction the pattern will follow — Onshape has no implicit "
-                "world-X axis usable here. Workflow: create a reference (a sketch line "
-                "on any plane pointing the direction you want, or pick an existing body "
-                "edge via list_entities), then pass its id as directionEdgeId."
+                "Create a linear BODY pattern: replicates the bodies created by the "
+                "seed feature(s) in featureIds (e.g. a NEW extrude). REMOVE/cut "
+                "features create no bodies and cannot be patterned this way — use "
+                "write_featurescript_feature with opPattern for cut patterns. "
+                "Requires a deterministic edge id whose direction the pattern will "
+                "follow — Onshape has no implicit world-X axis usable here. Workflow: "
+                "create a reference (a sketch line on any plane pointing the "
+                "direction you want, or pick an existing body edge via "
+                "list_entities), then pass its id as directionEdgeId."
             ),
             inputSchema={
                 "type": "object",
@@ -1597,7 +1619,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="create_circular_pattern",
-            description="Create a circular pattern of features around an axis",
+            description=(
+                "Create a circular BODY pattern around an axis edge: replicates the "
+                "bodies created by the seed feature(s) in featureIds. REMOVE/cut "
+                "features create no bodies — use write_featurescript_feature with "
+                "opPattern for cut patterns. The axis must be a real edge "
+                "(axisEdgeId); datum-plane axes like X/Y/Z do not exist as edges "
+                "and never regenerate."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1608,18 +1637,20 @@ async def list_tools() -> list[Tool]:
                     "featureIds": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Feature IDs to pattern",
+                        "description": "Seed feature IDs whose created bodies get patterned",
                     },
                     "count": {"type": "integer", "description": "Total number of instances"},
                     "angle": {"type": "number", "description": "Total angle spread in degrees", "default": 360},
-                    "axis": {
+                    "axisEdgeId": {
                         "type": "string",
-                        "enum": ["X", "Y", "Z"],
-                        "description": "Pattern axis",
-                        "default": "Z",
+                        "description": (
+                            "Deterministic id of a straight edge along the rotation "
+                            "axis. Get from list_entities(kinds=['edges']) or draw a "
+                            "construction line and use its edge. Required."
+                        ),
                     },
                 },
-                "required": ["documentId", "workspaceId", "elementId", "featureIds", "count"],
+                "required": ["documentId", "workspaceId", "elementId", "featureIds", "count", "axisEdgeId"],
             },
         ),
         Tool(
@@ -1685,7 +1716,8 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Export a Part Studio to STL, STEP, PARASOLID, GLTF, or OBJ. "
                 "Blocks until Onshape finishes the translation, downloads the "
-                "bytes, and writes them to /tmp/onshape-mcp-exports/. Returns "
+                "bytes, and writes them to the onshape-mcp-exports folder in "
+                "the system temp dir (override with ONSHAPE_MCP_EXPORT_DIR). Returns "
                 "the on-disk path, size, and final state so the user can open "
                 "the file. Raises an explicit error on FAILED or timeout."
             ),
@@ -1721,7 +1753,8 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Export an Assembly to STL, STEP, or GLTF. Blocks until "
                 "Onshape finishes the translation, downloads the bytes, and "
-                "writes them to /tmp/onshape-mcp-exports/. Returns on-disk "
+                "writes them to the onshape-mcp-exports folder in the system "
+                "temp dir (override with ONSHAPE_MCP_EXPORT_DIR). Returns on-disk "
                 "path, size, and final state."
             ),
             inputSchema={
@@ -2269,7 +2302,12 @@ async def list_tools() -> list[Tool]:
 
 METERS_TO_INCHES = 1 / 0.0254
 
-EXPORT_DIR = "/tmp/onshape-mcp-exports"
+# A literal "/tmp/..." lands in C:\tmp on Windows, invisible to tools that
+# sandbox /tmp. Use the platform temp dir, overridable for users who want
+# exports somewhere stable (e.g. a slicer watch folder).
+EXPORT_DIR = os.getenv("ONSHAPE_MCP_EXPORT_DIR") or os.path.join(
+    tempfile.gettempdir(), "onshape-mcp-exports"
+)
 
 
 def _write_export_to_disk(result, element_id: str) -> str:
@@ -2291,6 +2329,10 @@ def _write_export_to_disk(result, element_id: str) -> str:
     # Keep filenames short and recognizable.
     short_elem = element_id[:8] if element_id else "x"
     safe_base = base.replace("/", "_").replace(" ", "_")
+    # Onshape sometimes returns extension-less filenames; slicers and viewers
+    # key off the extension, so guarantee one.
+    if "." not in os.path.basename(safe_base) and result.format_name:
+        safe_base = f"{safe_base}.{result.format_name.lower()}"
     out_path = os.path.join(EXPORT_DIR, f"{ts}-{short_elem}-{safe_base}")
     with open(out_path, "wb") as f:
         f.write(result.data)
@@ -4404,7 +4446,40 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent | ImageConten
                 builder.build(),
                 track_changes=False,  # construction planes don't change bodies
             )
-            return [TextContent(type="text", text=_feature_apply_json(result, tool_name=name))]
+            payload = _feature_apply_json(result, tool_name=name)
+            # Resolve the plane's FACE deterministic id up front. Sketch tools
+            # need a face id, and the cPlane feature_id is not one — handing
+            # only the feature_id back sends every caller into SKETCH_NO_PLANE.
+            if result.ok and result.feature_id:
+                try:
+                    fs = (
+                        "function(context is Context, queries) { "
+                        "return transientQueriesToStrings(evaluateQuery(context, "
+                        f'qCreatedBy(makeId("{result.feature_id}"), EntityType.FACE))); '
+                        "}"
+                    )
+                    fs_result = await featurescript_manager.evaluate(
+                        document_id=arguments["documentId"],
+                        workspace_id=arguments["workspaceId"],
+                        element_id=arguments["elementId"],
+                        script=fs,
+                    )
+                    face_ids = [
+                        item.get("value")
+                        for item in fs_result.get("result", {}).get("value", [])
+                        if isinstance(item, dict) and item.get("value")
+                    ]
+                    if len(face_ids) == 1:
+                        parsed = json.loads(payload)
+                        parsed["face_id"] = face_ids[0]
+                        parsed.setdefault("hints", []).append(
+                            "Sketch on this plane by passing face_id (not "
+                            "feature_id) as the faceId argument."
+                        )
+                        payload = json.dumps(parsed, indent=2)
+                except Exception:
+                    logger.exception("Offset plane created but face-id resolution failed")
+            return [TextContent(type="text", text=payload)]
         except httpx.HTTPStatusError as e:
             return [TextContent(type="text", text=_exception_json(e, tool_name=name, status_code=e.response.status_code))]
         except Exception as e:
@@ -4472,9 +4547,9 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent | ImageConten
             pattern = CircularPatternBuilder(
                 name=arguments.get("name", "Circular pattern"),
                 count=arguments["count"],
+                axis_edge_id=arguments["axisEdgeId"],
             )
             pattern.set_angle(arguments.get("angle", 360.0))
-            pattern.set_axis(arguments.get("axis", "Z"))
             for fid in arguments["featureIds"]:
                 pattern.add_feature(fid)
             result = await apply_feature_and_check(

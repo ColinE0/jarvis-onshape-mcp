@@ -1929,7 +1929,7 @@ class TestFeatureTools:
         )
         result = await call_tool("create_circular_pattern", {
             "documentId": "d", "workspaceId": "w", "elementId": "e",
-            "count": 6, "featureIds": ["f1"],
+            "count": 6, "featureIds": ["f1"], "axisEdgeId": "EDGE1",
         })
         import json as _json
         parsed = _json.loads(result[0].text)

@@ -1,4 +1,18 @@
-"""Pattern feature builders for Onshape."""
+"""Pattern feature builders for Onshape.
+
+Both builders emit PART (body) patterns: they replicate the bodies CREATED BY
+the seed feature(s), referenced with a created-by query, the JSON equivalent
+of FeatureScript's `qCreatedBy(makeId(featureId), EntityType.BODY)`.
+
+Why not FEATURE patterns: sending seed feature ids inside a geometry
+`BTMIndividualQuery-138` (`deterministicIds`) never resolves — the regenerator
+wants geometry ids there, so the pattern REGEN_ERRORs every time. Body
+patterns of the seed's created bodies regenerate cleanly and cover the common
+"repeat this boss/knuckle/post along X" case. The one thing they cannot do is
+replicate a REMOVE (cut) feature, because a cut creates no body; for cut
+patterns use `write_featurescript_feature` with `opPattern` (see the
+fs-cookbook).
+"""
 
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -14,8 +28,27 @@ class PatternType(Enum):
     FACE = "FACE"
 
 
+def _seed_bodies_query(feature_ids: List[str], parameter_id: str) -> Dict[str, Any]:
+    """Query parameter selecting the bodies created by the seed features."""
+    return {
+        "btType": "BTMParameterQueryList-148",
+        "queries": [
+            {
+                "btType": "BTMIndividualCreatedByQuery-137",
+                "featureId": fid,
+                # Without this the server defaults the created-by query to
+                # EntityType.VERTEX (observed in the echoed queryString) and
+                # the pattern REGEN_ERRORs with nothing to replicate.
+                "entityType": "BODY",
+            }
+            for fid in feature_ids
+        ],
+        "parameterId": parameter_id,
+    }
+
+
 class LinearPatternBuilder:
-    """Builder for creating Onshape linear pattern features."""
+    """Builder for creating Onshape linear (body) pattern features."""
 
     def __init__(
         self,
@@ -77,10 +110,13 @@ class LinearPatternBuilder:
         return self
 
     def add_feature(self, feature_id: str) -> "LinearPatternBuilder":
-        """Add a feature to pattern by its deterministic ID.
+        """Add a seed feature whose created bodies get patterned.
 
         Args:
-            feature_id: Deterministic ID of the feature to pattern
+            feature_id: Feature ID of the seed feature (e.g. a NEW extrude).
+                The pattern replicates the BODIES this feature created. REMOVE
+                (cut) features create no bodies and cannot be patterned this
+                way; use opPattern via write_featurescript_feature instead.
 
         Returns:
             Self for chaining
@@ -132,13 +168,12 @@ class LinearPatternBuilder:
                 {
                     "btType": "BTMIndividualQuery-138",
                     "deterministicIds": [self.direction_edge_id],
-                    "queryStatement": None,
-                    "queryString": "",
                 }
             ],
-            "parameterId": "directionQuery",
-            "parameterName": "",
-            "libraryRelationType": "NONE",
+            # Per the linearPattern featurespec the direction parameter is
+            # "directionOne" ("directionQuery" does not exist and the pattern
+            # REGEN_ERRORs directionless).
+            "parameterId": "directionOne",
         }
 
     def build(self) -> Dict[str, Any]:
@@ -170,27 +205,14 @@ class LinearPatternBuilder:
                 "suppressed": False,
                 "namespace": "",
                 "parameters": [
-                    {
-                        "btType": "BTMParameterQueryList-148",
-                        "queries": [
-                            {
-                                "btType": "BTMIndividualQuery-138",
-                                "deterministicIds": self.feature_queries,
-                            }
-                        ],
-                        "parameterId": "entities",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
-                    },
+                    _seed_bodies_query(self.feature_queries, "entities"),
                     self._build_direction_query(),
                     {
                         "btType": "BTMParameterEnum-145",
                         "namespace": "",
                         "enumName": "PatternType",
-                        "value": PatternType.FEATURE.value,
+                        "value": PatternType.PART.value,
                         "parameterId": "patternType",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -199,8 +221,6 @@ class LinearPatternBuilder:
                         "units": "",
                         "expression": distance_expression,
                         "parameterId": "distance",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -209,8 +229,6 @@ class LinearPatternBuilder:
                         "units": "",
                         "expression": str(self.count),
                         "parameterId": "instanceCount",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                 ],
             },
@@ -218,25 +236,30 @@ class LinearPatternBuilder:
 
 
 class CircularPatternBuilder:
-    """Builder for creating Onshape circular pattern features."""
+    """Builder for creating Onshape circular (body) pattern features."""
 
     def __init__(
         self,
         name: str = "Circular pattern",
         count: int = 4,
+        axis_edge_id: Optional[str] = None,
     ):
         """Initialize circular pattern builder.
 
         Args:
             name: Name of the pattern feature
             count: Total number of instances including the original
+            axis_edge_id: Deterministic id of an edge (linear edge or
+                cylindrical-face axis edge) to revolve the pattern around.
+                REQUIRED: the old axis="X"/"Y"/"Z" path queried EDGE entities
+                on datum planes, which have none, so it never regenerated.
         """
         self.name = name
         self.count = count
         self.angle = 360.0
         self.angle_variable: Optional[str] = None
         self.feature_queries: List[str] = []
-        self.axis = "Z"
+        self.axis_edge_id: Optional[str] = axis_edge_id
 
     def set_count(self, count: int) -> "CircularPatternBuilder":
         """Set the number of pattern instances.
@@ -265,10 +288,12 @@ class CircularPatternBuilder:
         return self
 
     def add_feature(self, feature_id: str) -> "CircularPatternBuilder":
-        """Add a feature to pattern by its deterministic ID.
+        """Add a seed feature whose created bodies get patterned.
 
         Args:
-            feature_id: Deterministic ID of the feature to pattern
+            feature_id: Feature ID of the seed feature (e.g. a NEW extrude).
+                REMOVE (cut) features create no bodies; use opPattern via
+                write_featurescript_feature for those.
 
         Returns:
             Self for chaining
@@ -276,44 +301,36 @@ class CircularPatternBuilder:
         self.feature_queries.append(feature_id)
         return self
 
-    def set_axis(self, axis: str) -> "CircularPatternBuilder":
-        """Set the pattern rotation axis.
+    def set_axis_edge(self, edge_id: str) -> "CircularPatternBuilder":
+        """Set the rotation axis via an edge's deterministic ID.
 
-        Args:
-            axis: Rotation axis ("X", "Y", or "Z")
-
-        Returns:
-            Self for chaining
+        Get the edge id from list_entities(kinds=["edges"]) — a straight edge
+        along the intended axis, or draw a construction line and use its edge.
         """
-        self.axis = axis
+        self.axis_edge_id = edge_id
         return self
 
     def _build_axis_query(self) -> Dict[str, Any]:
-        """Build the rotation axis query parameter.
-
-        Returns:
-            Axis query parameter dictionary
-        """
-        axis_map = {
-            "X": "RIGHT",
-            "Y": "TOP",
-            "Z": "FRONT",
-        }
-        axis_value = axis_map.get(self.axis, "FRONT")
+        """Build the rotation-axis query parameter."""
+        if not self.axis_edge_id:
+            raise ValueError(
+                "CircularPatternBuilder needs an axis_edge_id. Call "
+                "list_entities(kinds=['edges']) and pick a straight edge "
+                "along the intended rotation axis; pass its id as "
+                "axis_edge_id."
+            )
 
         return {
             "btType": "BTMParameterQueryList-148",
             "queries": [
                 {
                     "btType": "BTMIndividualQuery-138",
-                    "deterministicIds": [],
-                    "queryStatement": None,
-                    "queryString": f'query = qCreatedBy(makeId("{axis_value}"), EntityType.EDGE);',
+                    "deterministicIds": [self.axis_edge_id],
                 }
             ],
-            "parameterId": "axisQuery",
-            "parameterName": "",
-            "libraryRelationType": "NONE",
+            # Per the circularPattern featurespec the parameter is "axis",
+            # not "axisQuery".
+            "parameterId": "axis",
         }
 
     def build(self) -> Dict[str, Any]:
@@ -341,27 +358,14 @@ class CircularPatternBuilder:
                 "suppressed": False,
                 "namespace": "",
                 "parameters": [
-                    {
-                        "btType": "BTMParameterQueryList-148",
-                        "queries": [
-                            {
-                                "btType": "BTMIndividualQuery-138",
-                                "deterministicIds": self.feature_queries,
-                            }
-                        ],
-                        "parameterId": "entities",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
-                    },
+                    _seed_bodies_query(self.feature_queries, "entities"),
                     self._build_axis_query(),
                     {
                         "btType": "BTMParameterEnum-145",
                         "namespace": "",
                         "enumName": "PatternType",
-                        "value": PatternType.FEATURE.value,
+                        "value": PatternType.PART.value,
                         "parameterId": "patternType",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -370,8 +374,6 @@ class CircularPatternBuilder:
                         "units": "",
                         "expression": angle_expression,
                         "parameterId": "angle",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                     {
                         "btType": "BTMParameterQuantity-147",
@@ -380,8 +382,6 @@ class CircularPatternBuilder:
                         "units": "",
                         "expression": str(self.count),
                         "parameterId": "instanceCount",
-                        "parameterName": "",
-                        "libraryRelationType": "NONE",
                     },
                 ],
             },

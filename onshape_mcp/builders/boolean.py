@@ -86,9 +86,7 @@ class BooleanBuilder:
                 "namespace": "",
                 "enumName": "BooleanOperationType",
                 "value": self.boolean_type.value,
-                "parameterId": "booleanOperationType",
-                "parameterName": "",
-                "libraryRelationType": "NONE",
+                "parameterId": "operationType",
             },
             {
                 "btType": "BTMParameterQueryList-148",
@@ -99,8 +97,6 @@ class BooleanBuilder:
                     }
                 ],
                 "parameterId": "tools",
-                "parameterName": "",
-                "libraryRelationType": "NONE",
             },
         ]
 
@@ -115,8 +111,6 @@ class BooleanBuilder:
                         }
                     ],
                     "parameterId": "targets",
-                    "parameterName": "",
-                    "libraryRelationType": "NONE",
                 }
             )
 
@@ -124,7 +118,9 @@ class BooleanBuilder:
             "btType": "BTFeatureDefinitionCall-1406",
             "feature": {
                 "btType": "BTMFeature-134",
-                "featureType": "boolean",
+                # The boolean-bodies feature's spec name is "booleanBodies";
+                # bare "boolean" gets HTTP 400 "Feature has invalid type".
+                "featureType": "booleanBodies",
                 "name": self.name,
                 "suppressed": False,
                 "namespace": "",
